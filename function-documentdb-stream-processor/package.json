@@ -1,0 +1,15 @@
+{
+  "name": "documentdb stream processor lambda",
+  "version": "1.0.0",
+  "description": "Blog sample for NodeJS",
+  "main": "index.js",
+  "repository": "",
+  "author": "AWS",
+  "license": "MIT-0",
+  "dependencies": {
+    "aws-sdk": "^2.860.0",
+    "bson": "^1.1.5",
+    "kafkajs": "^1.15.0",
+    "mongodb": "^3.6.4"
+  }
+}

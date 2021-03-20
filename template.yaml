@@ -1,0 +1,313 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  documentdb-stream-processor
+Globals:
+  Function:
+    Timeout: 30
+Parameters:
+  docDBUser:
+    Type: String
+    Default: masterUsername
+  docDBPass:
+    Type: String
+    Default: masterPass
+  docDBClusterName:
+    Type: String
+    Default: docDBCluster
+  mskClusterName:
+    Type: String
+    Default: blog-msk-clstr
+Resources:
+  StreamProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: function-documentdb-stream-processor
+      Handler: index.handler
+      Runtime: nodejs14.x
+      Role: !GetAtt BlogFunctionIAMRole.Arn
+      AutoPublishAlias: "live"
+      Timeout: 60
+      MemorySize: 128
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSG
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+      Environment:
+        Variables:
+          DOCDB_CLUSTER_ENDPOINT: !GetAtt DocumentDBCluster.Endpoint
+          MSK_BROKER_ARN: !Ref MSKCluster
+          DOCDB_USER: !Ref docDBUser
+          DOCDB_PASS: !Ref docDBPass
+          KAFKA_TOPIC_NAME: blog-events
+          MAX_WATCH_SECONDS: 10
+
+  BlogFunctionIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: BlogPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: CloudwatchLogsAccess
+                Effect: Allow
+                Action: 'logs:*'
+                Resource: '*'
+              - Sid: LambdaVPCAccess
+                Effect: Allow
+                Action: 
+                - 'ec2:CreateNetworkInterface'
+                - 'ec2:DeleteNetworkInterface'
+                - 'ec2:DescribeNetworkInterfaces'
+                - 'ec2:DescribeSecurityGroups'
+                - 'ec2:DescribeSubnets'
+                - 'ec2:DescribeVpcs'
+                - 'kms:DescribeKey'
+                - 'kafka:*'
+                Resource: '*'
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.99.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value:  !Join ['', [!Ref "AWS::StackName", "-VPC" ]]
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.99.1.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs ]    # Get the first AZ in the list       
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Public
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.99.2.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs ]    # Get the first AZ in the list       
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Private-A
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.99.3.0/24
+      AvailabilityZone: !Select [ 1, !GetAZs ]    # Get the second AZ in the list       
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Private-B
+  PublicSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Public
+  PublicRoute1:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW  
+  PublicSubnetARouteTableAssociation:
+     Type: AWS::EC2::SubnetRouteTableAssociation
+     Properties:
+       SubnetId: !Ref PublicSubnet
+       RouteTableId: !Ref PublicSubnetRouteTable
+
+  PrivateSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Private
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NatGW
+    Properties:
+      RouteTableId: !Ref PrivateSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGW
+  PrivateSubnetARouteTableAssociation:
+     Type: AWS::EC2::SubnetRouteTableAssociation
+     Properties:
+       SubnetId: !Ref PrivateSubnetA
+       RouteTableId: !Ref PrivateSubnetRouteTable
+  PrivateSubnetBRouteTableAssociation:
+     Type: AWS::EC2::SubnetRouteTableAssociation
+     Properties:
+       SubnetId: !Ref PrivateSubnetB
+       RouteTableId: !Ref PrivateSubnetRouteTable
+
+  LambdaSG:
+     Type: AWS::EC2::SecurityGroup
+     Properties:
+      GroupDescription: Lambda Security Group
+      VpcId: !Ref VPC
+  NatGW:
+    Type: AWS::EC2::NatGateway
+    Properties: 
+      AllocationId:
+         Fn::GetAtt:
+         - EIP
+         - AllocationId
+      SubnetId: !Ref PublicSubnet
+  EIP:
+   DependsOn: IGWAttachment
+   Type: AWS::EC2::EIP
+   Properties:
+      Domain: vpc
+  DocumentDBSG:
+   Type: AWS::EC2::SecurityGroup
+   Properties:
+    GroupDescription: DocumentDB Security Group
+    VpcId: !Ref VPC
+    SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 27017
+        ToPort: 27017
+        CidrIp: "10.99.0.0/16"
+      - IpProtocol: tcp
+        FromPort: 27017
+        ToPort: 27017
+        CidrIp: "10.99.0.0/16"
+    SecurityGroupEgress: 
+      - CidrIp: "0.0.0.0/0"
+        IpProtocol: "-1"
+  DocumentDBCluster:
+   Type: AWS::DocDB::DBCluster
+   Properties: 
+    DeletionProtection: false
+    EngineVersion: '4.0'
+    MasterUsername: !Ref docDBUser
+    MasterUserPassword: !Ref docDBPass
+    DBSubnetGroupName: !Ref DocumentDBSubnetGroup
+    StorageEncrypted: true
+    VpcSecurityGroupIds: 
+     - !Ref DocumentDBSG
+    AvailabilityZones: 
+      - !Select [ 0, !GetAZs ]
+      - !Select [ 1, !GetAZs ]
+    DBClusterIdentifier: !Ref docDBClusterName
+
+  DocumentDBSubnetGroup:
+   Type: AWS::DocDB::DBSubnetGroup
+   Properties: 
+    DBSubnetGroupDescription: blog-sg
+    DBSubnetGroupName: blog-sg
+    SubnetIds: 
+    - !Ref PrivateSubnetA
+    - !Ref PrivateSubnetB
+  DBInstance:
+   Type: AWS::DocDB::DBInstance
+   Properties:
+     AutoMinorVersionUpgrade: true
+     AvailabilityZone: !Select [ 0, !GetAZs ]    # Get the first AZ in the list       
+     DBClusterIdentifier: !Ref DocumentDBCluster
+     DBInstanceClass: "db.t3.medium"
+     DBInstanceIdentifier: "blog-cluster-ddb-instance-1"
+  MSKSG:
+   Type: AWS::EC2::SecurityGroup
+   DependsOn:
+    - Cloud9
+   Properties:
+    GroupDescription: DocumentDB Security Group
+    VpcId: !Ref VPC
+    SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 2181
+        ToPort: 2181
+        SourceSecurityGroupId: !Ref LambdaSG
+      - IpProtocol: tcp
+        FromPort: 9092
+        ToPort: 9092
+        SourceSecurityGroupId: !Ref LambdaSG
+      - IpProtocol: tcp
+        FromPort: 9094
+        ToPort: 9094
+        SourceSecurityGroupId: !Ref LambdaSG 
+      - IpProtocol: tcp
+        FromPort: 2181
+        ToPort: 2181
+        CidrIp: "10.99.0.0/16"
+      - IpProtocol: tcp
+        FromPort: 9092
+        ToPort: 9092
+        CidrIp: "10.99.0.0/16"
+      - IpProtocol: tcp
+        FromPort: 9094
+        ToPort: 9094
+        CidrIp: "10.99.0.0/16"
+    SecurityGroupEgress: 
+      - CidrIp: "0.0.0.0/0"
+        IpProtocol: "-1"
+  Cloud9:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Properties:
+      AutomaticStopTimeMinutes: 30
+      Description:  Blog Cloud9 Environment
+      InstanceType: t2.micro
+      Name: BlogCloud9Environment
+      SubnetId:
+        Ref: PublicSubnet
+  MSKCluster:
+   Type: AWS::MSK::Cluster
+   Properties: 
+    BrokerNodeGroupInfo: 
+      ClientSubnets: 
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      InstanceType: "kafka.t3.small"
+      SecurityGroups: 
+      - !Ref MSKSG
+    ClusterName: blog-msk-clstr
+    KafkaVersion: "2.2.1"
+    NumberOfBrokerNodes: 2
+    EncryptionInfo:
+      EncryptionInTransit:
+       ClientBroker: 'PLAINTEXT' 
+Outputs:
+   DocDBClusterEndpoint:
+    Description: DocumentDB Cluster Name
+    Value: !GetAtt DocumentDBCluster.Endpoint
+   Cloud9URL:
+    Description: Cloud9 Environment
+    Value:
+      Fn::Join:
+      - ''
+      - - !Sub https://${AWS::Region}.console.aws.amazon.com/cloud9/ide/
+        - !Ref 'Cloud9'
