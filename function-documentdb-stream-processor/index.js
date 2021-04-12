@@ -108,7 +108,6 @@ function getMskBootstrapBrokers () {
       var params = {
         ClusterArn: process.env.MSK_BROKER_ARN
       };
-      console.log("calling");
       kafkaSdk.getBootstrapBrokers(params, function(err, data) {
         if (err) {
         console.log(err);
