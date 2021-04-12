@@ -48,7 +48,7 @@ Resources:
           DOCDB_USER: !Ref docDBUser
           DOCDB_PASS: !Ref docDBPass
           KAFKA_TOPIC_NAME: blog-events
-          MAX_WATCH_SECONDS: 10
+          MAX_WATCH_SECONDS: 40
 
   BlogFunctionIAMRole:
     Type: 'AWS::IAM::Role'
