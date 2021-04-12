@@ -11,7 +11,8 @@ Parameters:
     Default: masterUsername
   docDBPass:
     Type: String
-    Default: masterPass
+    AllowedPattern : ".+"
+    NoEcho : true
   docDBClusterName:
     Type: String
     Default: docDBCluster
@@ -69,7 +70,10 @@ Resources:
             Statement:
               - Sid: CloudwatchLogsAccess
                 Effect: Allow
-                Action: 'logs:*'
+                Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
                 Resource: '*'
               - Sid: LambdaVPCAccess
                 Effect: Allow
@@ -81,7 +85,9 @@ Resources:
                 - 'ec2:DescribeSubnets'
                 - 'ec2:DescribeVpcs'
                 - 'kms:DescribeKey'
-                - 'kafka:*'
+                - 'kafka:Describe*'
+                - 'kafka:List*'
+                - 'kafka:Get*'
                 Resource: '*'
   VPC:
     Type: AWS::EC2::VPC
@@ -178,6 +184,9 @@ Resources:
      Properties:
       GroupDescription: Lambda Security Group
       VpcId: !Ref VPC
+      SecurityGroupEgress: 
+      - CidrIp: "0.0.0.0/0"
+        IpProtocol: "-1"
   NatGW:
     Type: AWS::EC2::NatGateway
     Properties: 
@@ -302,7 +311,7 @@ Resources:
        ClientBroker: 'PLAINTEXT' 
 Outputs:
    DocDBClusterEndpoint:
-    Description: DocumentDB Cluster Name
+    Description: DocumentDB Cluster Endpoint
     Value: !GetAtt DocumentDBCluster.Endpoint
    Cloud9URL:
     Description: Cloud9 Environment
